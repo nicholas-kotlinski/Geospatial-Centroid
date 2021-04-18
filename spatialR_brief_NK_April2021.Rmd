@@ -1,0 +1,383 @@
+---
+title: "A Brief Addition to Spatial Analysis in R"
+author: "Nicholas Kotlinski"
+date: "2021-04-16"
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+    collapsed: false
+    smooth_scroll: false
+---
+
+## **Getting Started**
+Assuming we have some extra time, this additional exercise is going to explore the species location data in more detail. We will produce two interactive map examples that you can open in your web browser. These types of simple web maps and applications allow you to share your data quickly and easily with project partners, colleagues, and the general public, with a lot of control over style and content. These examples are also meant to emphasize the amazing capabilities of existing APIs that you can leverage to access high resolution imagery and data visualization functionality that would otherwise be cost prohibitive to purchase or code from scratch.
+<br>
+
+#### Load packages
+We've already loaded a few of these packages in the previous example, but let's include everything we need for this example just to be safe.
+
+```{r warning = FALSE, message = FALSE}
+
+# Packages for Leaflet Mapping Example
+library(rgdal)
+library(raster)
+library(sp)
+library(sf)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(leaflet)
+library(leaflet.extras)
+library(leaflet.opacity)
+library(htmltools)
+library(htmlwidgets)
+
+# Packages for 3D Mapping Example
+library(geojsonio)
+library(mapdeck)
+
+```
+
+
+#### Set your working directory
+For this example, we will re-import all of the data and keep all of the species points to make our interactive map.The next few cells will be similar to what you already completed in the earlier exercise.
+
+```{r warning = FALSE}
+
+# Set the working/base directory where our project files are stored. This will be unique to your computer.
+baseDir <- getwd()
+
+# Create an output directory for any processed files
+dir.create(path = "output")
+outDir <- paste0(baseDir,"/output")
+
+```
+
+
+#### Import and set up the data
+Again, we've done this, so we will do it in a single cell.
+
+1.  Import the species sample location point data. /n
+2.  Import the protected areas raster (raster) /n
+3.  Convert the point data to a spatial points data frame (sp).
+4.  Crop the raster to the extent of our point data (raster)
+
+```{r warning = FALSE}
+
+# 1. Read in the species sample points again...
+d1 <- read.csv(paste0(baseDir,"/data/cucurbitaData.csv"))
+
+# 2. Read in the protected areas raster again...
+protLands <- raster::raster(x = paste0(baseDir,"/data/proAreas.tif"))
+
+# 3. Convert the .csv to a spatial points data frame, again...
+coordinates <- d1[,c(4,3)]
+proj4 <- protLands@crs
+sp1 <- sp::SpatialPointsDataFrame(coords = coordinates,
+                                  data = d1,
+                                  proj4string = proj4)
+
+# 4. Crop raster to spatial data frame extent
+protCrop <- raster::crop(x = protLands, y = sp1)
+
+```
+
+
+#### Extract protected area status to new column
+Next we are going to extract information from the protected areas raster to a new column in our data frame called "protected". It will fill the each row with a "1" if it falls within a protected area, and an "NA" if it falls outside of one.
+<br>
+
+```{r warning = FALSE}
+
+sp1$protected <- raster::extract(protCrop, sp1)
+head(sp1)
+
+```
+
+
+#### Label all points based on whether they do, or don't, fall in a protected area
+Now we want to label points that fall within protected areas so we can map protected species locations. Since we already extracted protected area information to our data frame, records that don't fall within protected areas will have an "NA" value. In this example we are going to change the "NA" values to "0". Another option would be to simply omit all "NA" values from the table if we only wanted the protected points, but in this case we want to visualize the differences.
+<br>
+
+```{r warning = FALSE}
+
+sp1.class <- sp1
+
+indexNA <- which(is.na(sp1.class$protected))
+
+sp1.class[indexNA, "protected"] <- 0 
+head(sp1.class)
+
+# We could also omit ALL "NA" values for an "all protected" data frame. But we can ignore this code for now.
+
+# sp1.nona@data <- na.omit(sp1.nona@data)
+# head(sp1.nona)
+
+```
+
+
+#### Load species rasters
+Next we are going to load the species range maps, or species distribution model rasters found in your "/data" folder. We didn't use these files in the previous example, but they are useful for mapping species ranges along with the sample point data. The file is in ".rda" format, so we will use the load() function and then pull each raster out of the file as individual raster objects.
+<br>
+
+```{r warning = FALSE}
+
+# Load the .rda file
+path <- paste0(baseDir,"/unzip/CucurbitaRasters.rda")
+load(path)
+
+# Extract each species' raster to individual objects
+cordata <- CucurbitaRasters$cordata
+palmata <- CucurbitaRasters$palmata
+digitata <- CucurbitaRasters$digitata
+
+# Plot an example...
+plot(digitata)
+
+```
+
+
+#### Filter raster data
+We can see from the map above that the data contains presence *and* absence values for the range map. We only want to plot the presence data (i.e., "1") in our web map, so we need to filter the data.
+<br>
+
+```{r warning = FALSE}
+
+digi.filter <- digitata
+digi.filter[digi.filter[] < 1] = NA
+digi.filter
+
+# Check the output...
+plot(digi.filter)
+
+```
+
+<br>
+Let's do that for the other species range maps...
+
+```{r warning = FALSE}
+
+corda.filter <- cordata
+corda.filter[corda.filter[] < 1] = NA
+
+palma.filter <- palmata
+palma.filter[palma.filter[] < 1] = NA
+
+```
+
+---
+
+## **Create a Leaflet Web Application**
+The previous tutorial had us create a simple Leaflet web map as an example, but Leaflet has so much to offer! The following cell will create a fully functional web application, where we can view both point vector and raster layers, make a heatmap of location density, and visualize different base maps. This section is meant to provide a deeper overview of the capabilities of Leaflet for making interactive web maps and applications. Again, one exciting, but very easy feature to add is the ability to easily make heatmaps based on the point location densities.
+<br>
+
+#### Choosing colors with **Color Brewer**
+A great place to choose color values (HEX, RGB, CMYK), especially for finding colorblind safe and print optimized color values, is from is [Color Brewer](colorbrewer2.org)
+<br>
+
+#### Leaflet Provider **Basemap Tiles**
+Here we are grabbing Leaflet provider basemap tiles. You can see all of the options [here](https://leaflet-extras.github.io/leaflet-providers/preview/).
+<br>
+
+#### Other map options...
+There are many (though not unlimited) options for customizing your web map by utilizing all the features in the [Leaflet](http://rstudio.github.io/leaflet/) package. You can extend the map's functionality with a growing ecosystem of [plugins](https://leafletjs.com/plugins) and add-on packages (e.g., leaflet.extras), or just join a future tutorial on JavaScript.
+<br>
+
+```{r warning = FALSE}
+
+pal <- colorFactor(c("#5ab4ac", "#d95f02", "#7570b3"), domain = c("Cucurbita_cordata", "Cucurbita_palmata", "Cucurbita_digitata"))
+propal <- colorFactor(c("#e31a1c", "#1f78b4"), domain = c(0, 1))
+
+map <- 
+  sp1.class %>% 
+  
+  leaflet() %>%
+  
+  addProviderTiles(providers$CartoDB.Positron, group = "CartoDB", options = providerTileOptions(minZoom = 4, maxZoom = 12)) %>%
+  addProviderTiles(providers$OpenTopoMap, group = "Topographic", options = providerTileOptions(minZoom = 4, maxZoom = 12, opacity = 0.45)) %>%
+  addProviderTiles(providers$Esri.WorldImagery, group = "Satellite", options = providerTileOptions(minZoom = 4, maxZoom = 12)) %>%
+
+  addCircleMarkers(color = ~pal(taxon), radius = 4, weight = 1, fillOpacity = 0.60, group = "Species Records") %>%
+  addCircleMarkers(color = ~propal(protected), radius = 4, weight = 1, fillOpacity = 0.60, group = "Protected Status") %>%
+
+  addHeatmap(lng=~as.numeric(longitude),
+             lat=~as.numeric(latitude),
+             radius = 8,
+             group = "Density (Heatmap)") %>%
+  
+  addRasterImage(protCrop, colors = "#fdbf6f", opacity = 0.75, group = "Protected Areas") %>%
+  addRasterImage(corda.filter, colors = "#1b9e77", opacity = 0.65, group = "Cordata Range") %>%
+  addRasterImage(digi.filter, colors = "#d95f02", opacity = 0.65, group = "Digitata Range") %>%
+  addRasterImage(palma.filter, colors = "#7570b3", opacity = 0.65, group = "Palmata Range") %>%
+  
+  addLegend("bottomleft", pal = pal, values = ~taxon,
+    title = "Taxonomic Name",
+    opacity = 1, group = "Species Records") %>%
+  
+  addLegend("bottomleft", pal = propal, values = ~protected,
+    title = "Protected Status",
+    opacity = 1, group = "Protected Status") %>%
+
+  addLayersControl(
+    baseGroups = c("CartoDB (default)", "Topographic", "Satellite"),
+    overlayGroups = c("Species Records", "Density (Heatmap)", "Protected Status", "Protected Areas", "Cordata Range", "Digitata Range", "Palmata Range"),
+    options = layersControlOptions(collapsed = TRUE)) %>%
+  
+  # Set the initial view and zoom level of the map
+  setView(-115, 30.75, zoom = 5) %>%
+  
+  # Using hideGroup gives us the option to hid map layers on launch to declutter our map
+  hideGroup("Density (Heatmap)") %>% 
+  hideGroup("Protected Status") %>% 
+  hideGroup("Protected Areas") %>% 
+  hideGroup("Cordata Range") %>% 
+  hideGroup("Digitata Range") %>% 
+  hideGroup("Palmata Range") %>%
+  
+  # This button add on allows us to reset the map to the original extent
+  addResetMapButton()
+  
+map
+  
+```
+
+#### Save the web map as an .html file
+Finally, we can save our map as an .html file so we can explore the map in a web browser!
+
+```{r warning = FALSE}
+
+saveWidget(map, file= paste0(outDir,"leafletMap.html"))
+
+```
+
+Check your "/outputs" folder for the .html file. Double click and see how the map looks in your web browser of choice.
+<br>
+
+---
+
+## **Create a 3D Web Map**
+Okay, one more fun map experiment! Let's use the [*mapdeck*](https://symbolixau.github.io/mapdeck/articles/mapdeck.html) package to make a 3D web visualization of our data. This package uses "Deck.gl", a user-friendly WebGL javascript library that integrates nicely with Mapbox, which, like Leaflet, is a great web mapping platform.
+<br>
+
+WebGL is a JavaScript API for rendering interactive 2D and 3D graphics in your web browser. Make sure your browser is [WebGL compatible](https://get.webgl.org/)
+<br>
+
+WebGL Platforms worth exploring:
+
+* [Potree](https://potree.github.io/)
+* [CesiumJS](https://cesium.com/platform/cesiumjs/)
+* [ThreeJS](https://blog.mapbox.com/bringing-3d-terrain-to-the-browser-with-three-js-410068138357)
+
+#### Extract spatial data to polygon
+Here I want to extract the species sample points to ecoregions so that we have something informative to plot. It's completely possible to do this with our available data in R, but we only have 15 minutes, so I've already prepared a shapefile in ArcGIS Pro with species location attributes added. We haven't loaded a shapefile into R yet, so let's do that and quickly view the data.
+<br>
+
+```{r warning = FALSE}
+
+# Import and view 
+ecoCount <- rgdal::readOGR(paste0(outDir,"/eco_feature_count_04162021.shp"))
+plot(ecoCount, 
+     col=ecoCount$COUNTS,
+     main = "Species Sample Count By Ecoregion")
+
+```
+
+#### Now we need to convert the shapefile to a format that _mapdeck_ can read.
+
+```{r warning = FALSE}
+
+# Convert shapefile to GeoJSON
+ecoCount.json <- geojson_json(ecoCount)
+
+ecoCount.sf <- geojson_sf(ecoCount.json)
+ecoCount.sf
+
+```
+
+### 3D Web Map
+Now let's plot some data to see how it looks. First we will test just using a simple data frame of species sample locations.
+
+This package uses the Mapbox API for the basemap, so we will need to register for a free Mapbox account to access our user [token](https://docs.mapbox.com/help/getting-started/access-tokens/). I've included my public token for this example, but please be kind and create your own for any future exploration.
+<br>
+
+```{r warning = FALSE, message = FALSE}
+
+# Set the Mapbox key
+key <- set_token("pk.eyJ1Ijoia290bGluaWMiLCJhIjoiZ3FCVFdTZyJ9.WfWEgjDKl9N0NKUyeLlAgA")
+
+mapdeck(
+    style = mapdeck_style('dark'),
+    pitch = 45,
+    location =  c(-112, 31),
+    zoom = 5) %>%
+  
+  add_grid(
+    data = d1,
+    lat = "latitude",
+    lon = "longitude",
+    cell_size = 5000,
+    elevation_scale = 200,
+    layer_id = "taxon",
+    update_view = FALSE
+  ) %>%
+  
+  add_heatmap(
+    data = d1,
+    lat = "latitude",
+    lon = "longitude",
+    weight = "X",
+    colour_range = colourvalues::colour_values(1:6, palette = "viridis"),
+    update_view = FALSE
+  )
+
+```
+
+
+
+```{r warning = FALSE}
+
+# We are going to exaggerate our data values so that the features "pop" more. 
+ecoCount.sf$COUNTS <- ecoCount.sf$COUNTS * 100
+
+```
+
+```{r warning = FALSE}
+
+mapdeck(
+    style = mapdeck_style('dark'),
+    pitch = 45,
+    location =  c(-112, 31)
+  ) %>%
+  
+    add_polygon(
+    data = ecoCount.sf,
+    layer = "polygon_layer",
+    fill_colour = "ECO_NAME",
+    elevation = "COUNTS",
+    legend = TRUE
+  )
+
+```
+
+#### Now run the following cell to save the map as an .html document
+
+```{r warning = FALSE}
+
+ecodeck <- mapdeck(token = key, style = mapdeck_style("dark")) %>%
+    add_polygon(
+    data = ecoCount.sf,
+    layer = "polygon_layer",
+    fill_colour = "ECO_NAME",
+    elevation = "COUNTS",
+    legend = TRUE
+  )
+
+# We are going to save the widget as an .html file again so we can open it in our browser.
+saveWidget(ecodeck, file="3Dmap.html")
+  
+```
+
+---
+## **Congratulations**
+Good work! You've finished this additional portion of the tutorial.
